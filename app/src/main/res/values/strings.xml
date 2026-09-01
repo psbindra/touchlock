@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">TouchLock</string>
+    <string name="quick_tile_label">Touch Lock</string>
+</resources>
