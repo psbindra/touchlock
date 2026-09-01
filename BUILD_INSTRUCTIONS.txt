@@ -1,0 +1,12 @@
+TouchLock build requirements
+- JDK 17
+- Gradle 8.4
+- Android SDK Platform 34 + Build Tools 34.x
+
+Build command:
+  gradle assembleDebug
+
+APK output:
+  app/build/outputs/apk/debug/app-debug.apk
+
+The included GitHub Actions workflow installs Gradle 8.4 and builds the debug APK on GitHub-hosted Ubuntu runners.
