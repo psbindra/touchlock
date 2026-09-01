@@ -7,7 +7,6 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.view.*
-import android.widget.ImageView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 
@@ -15,7 +14,6 @@ class TouchLockOverlayService : Service() {
 
     private var windowManager: WindowManager? = null
     private var overlayTouchView: View? = null
-    private var floatingUnlockButton: View? = null
     private var isLocked = false
 
     companion object {
@@ -24,6 +22,8 @@ class TouchLockOverlayService : Service() {
         const val ACTION_TOGGLE = "com.touchlock.action.TOGGLE"
         const val ACTION_LOCK = "com.touchlock.action.LOCK"
         const val ACTION_UNLOCK = "com.touchlock.action.UNLOCK"
+        const val ACTION_SUSPEND_OVERLAY = "com.touchlock.action.SUSPEND_OVERLAY"
+        const val ACTION_RESUME_OVERLAY = "com.touchlock.action.RESUME_OVERLAY"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -40,13 +40,21 @@ class TouchLockOverlayService : Service() {
             ACTION_TOGGLE -> if (isLocked) disableLock() else enableLock()
             ACTION_LOCK -> enableLock()
             ACTION_UNLOCK -> disableLock()
+            ACTION_SUSPEND_OVERLAY -> suspendOverlay()
+            ACTION_RESUME_OVERLAY -> resumeOverlay()
         }
         return START_STICKY
     }
 
     private fun enableLock() {
-        if (isLocked) return
-        isLocked = true
+        if (!isLocked) {
+            isLocked = true
+        }
+        showOverlay()
+    }
+
+    private fun showOverlay() {
+        if (!isLocked || overlayTouchView != null) return
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -64,32 +72,53 @@ class TouchLockOverlayService : Service() {
         val inflater = LayoutInflater.from(this)
         overlayTouchView = inflater.inflate(R.layout.touch_lock_overlay, null)
 
-        // Intercept and absorb all touches
-        overlayTouchView?.setOnTouchListener { _, _ ->
-            // Touch absorbed! Prevent kid from hanging up video call
-            true
-        }
+        // Intercept and absorb touches that reach the blocking overlay.
+        overlayTouchView?.setOnTouchListener { _, _ -> true }
 
         val unlockBadge = overlayTouchView?.findViewById<View>(R.id.btnUnlockFloating)
         unlockBadge?.setOnClickListener {
-            // Trigger pattern unlock activity
+            // Remove only the blocking overlay so the parent unlock UI can receive touch.
+            // The service remains logically locked until authentication succeeds.
+            suspendOverlay()
+
             val patternIntent = Intent(this, PatternUnlockActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
-            startActivity(patternIntent)
+
+            try {
+                startActivity(patternIntent)
+            } catch (e: Exception) {
+                // If the unlock activity cannot open, immediately restore protection.
+                resumeOverlay()
+                Toast.makeText(this, "Unable to open unlock screen", Toast.LENGTH_SHORT).show()
+            }
         }
 
         windowManager?.addView(overlayTouchView, params)
         Toast.makeText(this, "Screen Locked for Kids 👶", Toast.LENGTH_SHORT).show()
     }
 
-    fun disableLock() {
-        if (!isLocked) return
-        overlayTouchView?.let {
-            windowManager?.removeView(it)
+    private fun suspendOverlay() {
+        overlayTouchView?.let { view ->
+            try {
+                windowManager?.removeView(view)
+            } catch (_: Exception) {
+                // View may already have been detached.
+            }
         }
         overlayTouchView = null
+    }
+
+    private fun resumeOverlay() {
+        if (isLocked) {
+            showOverlay()
+        }
+    }
+
+    fun disableLock() {
+        if (!isLocked && overlayTouchView == null) return
         isLocked = false
+        suspendOverlay()
         Toast.makeText(this, "Touch Restored!", Toast.LENGTH_SHORT).show()
     }
 
@@ -123,7 +152,8 @@ class TouchLockOverlayService : Service() {
     }
 
     override fun onDestroy() {
-        disableLock()
+        isLocked = false
+        suspendOverlay()
         super.onDestroy()
     }
 }
