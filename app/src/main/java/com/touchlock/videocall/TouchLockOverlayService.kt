@@ -1,11 +1,13 @@
 package com.touchlock.videocall
 
 import android.app.*
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
+import android.service.quicksettings.TileService
 import android.view.*
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -24,6 +26,9 @@ class TouchLockOverlayService : Service() {
         const val ACTION_UNLOCK = "com.touchlock.action.UNLOCK"
         const val ACTION_SUSPEND_OVERLAY = "com.touchlock.action.SUSPEND_OVERLAY"
         const val ACTION_RESUME_OVERLAY = "com.touchlock.action.RESUME_OVERLAY"
+
+        private const val PREFS = "touchlock_state"
+        private const val KEY_LOCKED = "locked"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -31,6 +36,7 @@ class TouchLockOverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        isLocked = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_LOCKED, false)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
     }
@@ -42,15 +48,16 @@ class TouchLockOverlayService : Service() {
             ACTION_UNLOCK -> disableLock()
             ACTION_SUSPEND_OVERLAY -> suspendOverlay()
             ACTION_RESUME_OVERLAY -> resumeOverlay()
+            null -> if (isLocked) showOverlay()
         }
         return START_STICKY
     }
 
     private fun enableLock() {
-        if (!isLocked) {
-            isLocked = true
-        }
+        isLocked = true
+        saveLockedState(true)
         showOverlay()
+        refreshQuickTile()
     }
 
     private fun showOverlay() {
@@ -72,13 +79,10 @@ class TouchLockOverlayService : Service() {
         val inflater = LayoutInflater.from(this)
         overlayTouchView = inflater.inflate(R.layout.touch_lock_overlay, null)
 
-        // Intercept and absorb touches that reach the blocking overlay.
         overlayTouchView?.setOnTouchListener { _, _ -> true }
 
         val unlockBadge = overlayTouchView?.findViewById<View>(R.id.btnUnlockFloating)
         unlockBadge?.setOnClickListener {
-            // Remove only the blocking overlay so the parent unlock UI can receive touch.
-            // The service remains logically locked until authentication succeeds.
             suspendOverlay()
 
             val patternIntent = Intent(this, PatternUnlockActivity::class.java).apply {
@@ -88,7 +92,6 @@ class TouchLockOverlayService : Service() {
             try {
                 startActivity(patternIntent)
             } catch (e: Exception) {
-                // If the unlock activity cannot open, immediately restore protection.
                 resumeOverlay()
                 Toast.makeText(this, "Unable to open unlock screen", Toast.LENGTH_SHORT).show()
             }
@@ -103,7 +106,6 @@ class TouchLockOverlayService : Service() {
             try {
                 windowManager?.removeView(view)
             } catch (_: Exception) {
-                // View may already have been detached.
             }
         }
         overlayTouchView = null
@@ -118,8 +120,24 @@ class TouchLockOverlayService : Service() {
     fun disableLock() {
         if (!isLocked && overlayTouchView == null) return
         isLocked = false
+        saveLockedState(false)
         suspendOverlay()
+        refreshQuickTile()
         Toast.makeText(this, "Touch Restored!", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun saveLockedState(locked: Boolean) {
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_LOCKED, locked)
+            .apply()
+    }
+
+    private fun refreshQuickTile() {
+        TileService.requestListeningState(
+            this,
+            ComponentName(this, TouchLockTileService::class.java)
+        )
     }
 
     private fun createNotificationChannel() {
@@ -152,7 +170,6 @@ class TouchLockOverlayService : Service() {
     }
 
     override fun onDestroy() {
-        isLocked = false
         suspendOverlay()
         super.onDestroy()
     }
