@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Build
 import android.os.IBinder
 import android.service.quicksettings.TileService
@@ -71,15 +72,33 @@ class TouchLockOverlayService : Service() {
             else
                 @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            // Deliberately keep the overlay focusable. This lets its window receive
+            // and consume Back navigation instead of allowing Back to reach the
+            // video-call app underneath it.
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
 
         val inflater = LayoutInflater.from(this)
         overlayTouchView = inflater.inflate(R.layout.touch_lock_overlay, null)
 
-        overlayTouchView?.setOnTouchListener { _, _ -> true }
+        overlayTouchView?.apply {
+            isFocusable = true
+            isFocusableInTouchMode = true
+
+            // Absorb ordinary screen touches while TouchLock is active.
+            setOnTouchListener { _, _ -> true }
+
+            // Back button / Back gesture is normally delivered to the focused
+            // window as KEYCODE_BACK on supported Android versions/OEMs.
+            setOnKeyListener { _, keyCode, event ->
+                if (keyCode == KeyEvent.KEYCODE_BACK) {
+                    event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP
+                } else {
+                    false
+                }
+            }
+        }
 
         val unlockBadge = overlayTouchView?.findViewById<View>(R.id.btnUnlockFloating)
         unlockBadge?.setOnClickListener {
@@ -98,7 +117,29 @@ class TouchLockOverlayService : Service() {
         }
 
         windowManager?.addView(overlayTouchView, params)
+
+        overlayTouchView?.post {
+            overlayTouchView?.requestFocus()
+            applyGestureExclusion()
+        }
+
         Toast.makeText(this, "Screen Locked for Kids 👶", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun applyGestureExclusion() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+
+        val view = overlayTouchView ?: return
+        if (view.width <= 0 || view.height <= 0) return
+
+        val density = resources.displayMetrics.density
+        val edgeWidth = (32 * density).toInt().coerceAtLeast(1)
+
+        // Ask Android to reserve the side edges for TouchLock. Android/OEMs may
+        // clamp gesture-exclusion regions for safety, so this is best-effort.
+        val leftEdge = Rect(0, 0, edgeWidth, view.height)
+        val rightEdge = Rect(view.width - edgeWidth, 0, view.width, view.height)
+        view.systemGestureExclusionRects = listOf(leftEdge, rightEdge)
     }
 
     private fun suspendOverlay() {
